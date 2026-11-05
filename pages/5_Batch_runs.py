@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.DEBUG, force=True)
 logger = logging.getLogger(__name__)
 
 def find_input(session,input_gear):
-
+    logger.info(f"INPUT_GEAR    : {input_gear}")
     gear_results = fw.analyses.find(f"parents.session={session.id},gear_info.name={input_gear}")
     
     if not gear_results or input_gear == "gambas":
@@ -212,7 +212,7 @@ def submit_job(fw, session,gearname):
     # Look at every acquisition in the session
     for acquisition in session.acquisitions.find(f'label=~{INCLUDE_PATTERN}'):
         inputs = {}
-        logger.info(f"Checking acquisition: {acquisition.label}...")
+        #logger.info(f"Checking acquisition: {acquisition.label}...")
 
         match = next(
         (f for f in acquisition.files
@@ -248,20 +248,20 @@ def submit_job(fw, session,gearname):
                             }
                     )
                 else:
-                    
-                    job_id = gear.run(
-                        analysis_label=analysis_label,
-                        inputs=inputs,
-                        destination=dest,
-                        tags=['batch',tags.get(gearname, 'analysis')],
-                        config={
+                    logger.info("Fake submitting job") 
+                    # job_id = gear.run(
+                    #     analysis_label=analysis_label,
+                    #     inputs=inputs,
+                    #     destination=dest,
+                    #     tags=['batch',tags.get(gearname, 'analysis')],
+                    #     config={
                         
-                            # "prefix": analysis_tag,
-                        }
-                    )
+                    #         # "prefix": analysis_tag,
+                    #     }
+                    # )
                 
                 
-                job_ids.append(job_id)
+                #job_ids.append(job_id)
                 # return job_id
                 
             except Exception as e:
@@ -278,15 +278,13 @@ def get_analyses(session,gearname,input_type=None,inputfile=None):
     Returns:
         list? : A list of analyses that match the specified gear name for the given session.
     """
-    analyses = fw.analyses.find(f"parents.session={session.id},gear_info.name={gearname.lower()}")
-    
-    analyses = sorted(analyses, key=lambda x: x.created, reverse=True)
+    #Find analyses for this session and gearname (regardless on input)
+    analyses = fw.analyses.find(f"parents.session={session.id},gear_info.name={gearname.lower()}") 
+    analyses = sorted(analyses, key=lambda x: x.created, reverse=True) #sort them by date created, descending
     matching_analyses = []
     logger.info(f"Found {len(analyses)} {[asys.label for asys in analyses]}")
     for analysis in analyses:
         if input_type is not None:
-            #Get the latest analysis created
-            
             if analysis and analysis.inputs:
                 input_analysis_id = analysis.inputs[0].parents.analysis
                 #Find the gear of this analysis
@@ -307,7 +305,15 @@ def get_analyses(session,gearname,input_type=None,inputfile=None):
             logger.info(f"Analysis {analysis.label} has no inputs or inputs are not linked to an analysis.")
             matching_analyses.append(analysis)
     
-    
+    #If no matching analyses found, check if gambas analyses container exist based on the label
+    if gearname == "gambas" and not matching_analyses:
+        logger.info(f"No matching analyses found for {gearname} in session {session.label}. Checking for gambas analyses based on label...")
+        gambas_analyses = fw.analyses.find(f"parents.session={session.id}")
+        for asys in gambas_analyses:
+            if "gambas" in asys.label.lower() and ("0.4.17" in asys.label.lower() or "0.4.14" in asys.label.lower()):
+                logger.info(f"Found gambas analysis container based on label: {asys.label}")
+                matching_analyses.append(asys)
+            
     return matching_analyses
 
 
@@ -339,8 +345,8 @@ def find_latest_gambas_file(session):
     Find the most recent gambas analysis file in the session or its acquisitions.
     Returns the first suitable gambas file ending with 'rec-axi_T2w_gambas.nii.gz' from the latest gambas analysis, or None if not found.
     """
-    logger.info(f"   Checking analyses in session")
-    gambas_results = get_analyses(session, "gambas")
+    logger.info(f"   Checking analyses in session for a gambas file")
+    gambas_results = get_analyses(session, "gambas") #only pass the session, and the gearname (gambas in this case, which will be used as input)
     #Get the acquisition analyses in this session
     
     gambas_analyses = [r for r in gambas_results if is_status(r,"gambas",["complete"])]
@@ -592,7 +598,7 @@ def run_jobs(fw, project, gearname, input_type=False, acq_label_string=None,anal
     else:
         sessions = project.sessions()
 
-    for session in sessions:
+    for session in sorted(project.sessions(), key=lambda s: s.created, reverse=True):
         
         skip_session = False
         if not (session.subject.label.startswith("137-")): #Ensure this does not run on the phantom - waste of resource and nonsense results
@@ -642,6 +648,7 @@ def run_jobs(fw, project, gearname, input_type=False, acq_label_string=None,anal
                     if job_id:
                         status.text(f"🚀 Submitted {gearname} job for session {session_id}")
                         logger.info(f"🚀 Submitted {gearname} job (ID: {job_id}) for session {session_id}")
+                    continue
                     
                 ### GAMBAS CHECKS ####
                 elif input_type == "GAMBAS":
@@ -704,7 +711,7 @@ def run_jobs(fw, project, gearname, input_type=False, acq_label_string=None,anal
                     inputfile = None
                     logger.info("Other Acquisition")
                     for acquisition in session.acquisitions():
-                        logger.info(acquisition.label)
+                        #logger.info(acquisition.label)
                         acquisition = acquisition.reload()
                         if any(label.lower() in acquisition.label.lower() for label in acq_label_string) and not any(exclude_label.lower() in acquisition.label.lower() for exclude_label in st.session_state.exclude_acq_label):
                             for file in acquisition.files:
@@ -788,8 +795,7 @@ if "authenticated" not in st.session_state:
 if "api_key" not in st.session_state:
     st.session_state.api_key = None
 
-API_KEY = os.getenv("FW_CLI_API_KEY")
-
+API_KEY = os.getenv("FW_API_KEY")
 if (API_KEY == None or API_KEY == "") and st.session_state.authenticated == False:
     
     #Display message to enter API KEY in Home page
@@ -909,7 +915,7 @@ if st.button("Run Batch Job"):
         "Recon-all-clinical": ('recon-all-clinical', {'acq_label_string': acq_label_string}),
         "Recon-any": ('recon-any', {'acq_label_string': acq_label_string}),
         "Infant-freesurfer": ('infant-freesurfer', {}),
-        "BIBSNET (baby-and-infant-brain-segmentation)": ('baby-and-infant-brain-segmentation', {}),
+        "BIBSNET (baby-and-infant-brain-segmentation)": ('baby-and-infant-brain-segmentation', {'acq_label_string': acq_label_string}),
         "SuperSynth": ('supersynth', {'acq_label_string': acq_label_string, 'analysis_tag': 'gpuplus'}),
         "iBEAT": ('ibeat2', {'analysis_tag': 'gpu'}),
         "MRR": (None, {'input_type': None}),  # special-cased below for input_type=None
